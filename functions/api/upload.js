@@ -5,52 +5,31 @@ const MAX_SMALL_FILE_BYTES = 20 * 1024 * 1024;
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-    },
+    headers: { "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
-function stripExt(name) {
-  return name.replace(/\.[^.]+$/, "");
+function formatDateForName(date = new Date()) {
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yyyy = String(date.getFullYear());
+  return `${dd}.${mm}.${yyyy}`;
 }
 
-function getExt(name) {
-  const match = name.match(/(\.[^.]+)$/);
-  return match ? match[1] : "";
-}
+function buildBaseName(prefix, index, totalFiles, dateStr) {
+  const safePrefix = sanitizePrefix(prefix);
 
-function sanitizeFilePart(value) {
-  return value
-    .replace(/[<>:"/\\|?*]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function formatDisplayDate(date) {
-  const day = String(date.getDate()).padStart(2, "0");
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const year = String(date.getFullYear());
-  return `${day}.${month}.${year}`;
-}
-
-function buildBaseName(prefix, originalFileName, index, total, dateLabel) {
-  const normalizedPrefix = sanitizeFilePart(prefix).toLocaleUpperCase();
-  const fallbackBase = sanitizeFilePart(stripExt(originalFileName)) || "FILE";
-  const basePrefix = normalizedPrefix || fallbackBase;
-
-  if (total === 1) {
-    return `${basePrefix} ${dateLabel}`;
+  if (safePrefix) {
+    if (totalFiles > 1) {
+      return `${safePrefix} ${index} ${dateStr}`;
+    }
+    return `${safePrefix} ${dateStr}`;
   }
 
-  return `${basePrefix} ${index + 1} ${dateLabel}`;
-}
-
-function renameFile(file, targetName) {
-  return new File([file], targetName, {
-    type: file.type || "application/octet-stream",
-    lastModified: file.lastModified,
-  });
+  if (totalFiles > 1) {
+    return `${index} ${dateStr}`;
+  }
+  return dateStr;
 }
 
 async function notionFetch(env, path, init = {}, isJson = true) {
@@ -62,43 +41,43 @@ async function notionFetch(env, path, init = {}, isJson = true) {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${NOTION_API_BASE}${path}`, {
+  const res = await fetch(`${NOTION_API_BASE}${path}`, {
     ...init,
     headers,
   });
 
-  const text = await response.text();
+  const text = await res.text();
   let data = {};
 
   if (text) {
     try {
       data = JSON.parse(text);
     } catch {
-      data = { raw: text };
+      throw new Error(`${path} -> ${res.status} returned non-JSON: ${text}`);
     }
   }
 
-  if (!response.ok) {
-    throw new Error(`${path} -> ${response.status} ${JSON.stringify(data)}`);
+  if (!res.ok) {
+    throw new Error(`${path} -> ${res.status} ${JSON.stringify(data)}`);
   }
 
   return data;
 }
 
-async function createFileUpload(env, file) {
+async function createFileUpload(env, uploadFileName, contentType) {
   return notionFetch(env, "/file_uploads", {
     method: "POST",
     body: JSON.stringify({
       mode: "single_part",
-      filename: file.name,
-      content_type: file.type || "application/octet-stream",
+      filename: uploadFileName,
+      content_type: contentType || "application/octet-stream",
     }),
   });
 }
 
-async function sendFileUpload(env, fileUploadId, file) {
+async function sendFileUpload(env, fileUploadId, file, uploadFileName) {
   const form = new FormData();
-  form.append("file", file, file.name);
+  form.append("file", file, uploadFileName);
 
   return notionFetch(
     env,
@@ -107,11 +86,11 @@ async function sendFileUpload(env, fileUploadId, file) {
       method: "POST",
       body: form,
     },
-    false,
+    false
   );
 }
 
-async function createTicketPage(env, title, fileUploadId, fileName, dateValue) {
+async function createTicketPage(env, title, uploadFileName, fileUploadId, notionDate) {
   return notionFetch(env, "/pages", {
     method: "POST",
     body: JSON.stringify({
@@ -133,7 +112,7 @@ async function createTicketPage(env, title, fileUploadId, fileName, dateValue) {
           files: [
             {
               type: "file_upload",
-              name: fileName,
+              name: uploadFileName,
               file_upload: {
                 id: fileUploadId,
               },
@@ -142,7 +121,7 @@ async function createTicketPage(env, title, fileUploadId, fileName, dateValue) {
         },
         [env.DATE_PROP]: {
           date: {
-            start: dateValue,
+            start: notionDate,
           },
         },
       },
@@ -156,61 +135,52 @@ function extractTicketId(page, uniqueIdPropName) {
   return unique.prefix ? `${unique.prefix}-${unique.number}` : String(unique.number);
 }
 
-export async function onRequestPost(context) {
-  const { request, env } = context;
-
+export async function onRequestPost({ request, env }) {
   try {
-    if (!env.NOTION_TOKEN || !env.TARGET_DATA_SOURCE_ID) {
-      return json({ error: "Missing required Cloudflare secrets/env vars" }, 500);
-    }
-
     const form = await request.formData();
-    const prefix = String(form.get("titlePrefix") || "").trim();
+    const prefixRaw = String(form.get("titlePrefix") || "");
     const fileEntries = form.getAll("files");
-    const files = fileEntries.filter((entry) => entry instanceof File);
+    const files = fileEntries.filter((item) => item instanceof File);
 
     if (!files.length) {
       return json({ error: "No files received" }, 400);
     }
 
-    const allowedMimePrefixes = ["image/"];
     const now = new Date();
-    const notionDate = now.toISOString().slice(0, 10);
-    const displayDate = formatDisplayDate(now);
+    const humanDate = formatDateForName(now);
+    const notionDate = formatDateForNotion(now);
+
     const items = [];
 
-    for (let i = 0; i < files.length; i += 1) {
-      const originalFile = files[i];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
 
-      if (!allowedMimePrefixes.some((prefixValue) => originalFile.type.startsWith(prefixValue))) {
-        throw new Error(`Unsupported file type: ${originalFile.name}`);
+      if (file.size > MAX_SMALL_FILE_BYTES) {
+        throw new Error(`File ${file.name} is larger than 20 MB`);
       }
 
-      if (originalFile.size > MAX_SMALL_FILE_BYTES) {
-        throw new Error(`File ${originalFile.name} is larger than 20 MB`);
-      }
+      const index = i + 1;
+      const ext = getExtension(file.name);
+      const title = buildBaseName(prefixRaw, index, files.length, humanDate);
+      const uploadFileName = `${title}${ext}`;
 
-      const title = buildBaseName(prefix, originalFile.name, i, files.length, displayDate);
-      const renamedFileName = `${title}${getExt(originalFile.name)}`;
-      const renamedFile = renameFile(originalFile, renamedFileName);
-
-      const upload = await createFileUpload(env, renamedFile);
-      await sendFileUpload(env, upload.id, renamedFile);
+      const upload = await createFileUpload(env, uploadFileName, file.type);
+      await sendFileUpload(env, upload.id, file, uploadFileName);
 
       const page = await createTicketPage(
         env,
         title,
+        uploadFileName,
         upload.id,
-        renamedFile.name,
-        notionDate,
+        notionDate
       );
 
       items.push({
-        originalFileName: originalFile.name,
-        fileName: renamedFile.name,
+        originalFileName: file.name,
+        storedFileName: uploadFileName,
         title,
-        pageId: page.id,
         ticketId: extractTicketId(page, env.UNIQUE_ID_PROP),
+        pageId: page.id,
       });
     }
 
@@ -225,7 +195,7 @@ export async function onRequestPost(context) {
         ok: false,
         error: error?.message || "Unknown error",
       },
-      500,
+      500
     );
   }
 }
