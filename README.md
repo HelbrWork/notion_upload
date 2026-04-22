@@ -1,6 +1,6 @@
 # Notion ticket upload portal
 
-Готовый MVP под Cloudflare Pages + Pages Functions.
+Готовый MVP под Cloudflare Pages + Pages Functions v2.
 
 Что делает:
 - принимает несколько изображений через drag & drop;
