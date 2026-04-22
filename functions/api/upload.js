@@ -15,10 +15,42 @@ function stripExt(name) {
   return name.replace(/\.[^.]+$/, "");
 }
 
-function buildTitle(prefix, fileName, index, total) {
-  if (!prefix) return stripExt(fileName);
-  if (total === 1) return prefix;
-  return `${prefix}#${index + 1}`;
+function getExt(name) {
+  const match = name.match(/(\.[^.]+)$/);
+  return match ? match[1] : "";
+}
+
+function sanitizeFilePart(value) {
+  return value
+    .replace(/[<>:"/\\|?*]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatDisplayDate(date) {
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = String(date.getFullYear());
+  return `${day}.${month}.${year}`;
+}
+
+function buildBaseName(prefix, originalFileName, index, total, dateLabel) {
+  const normalizedPrefix = sanitizeFilePart(prefix).toLocaleUpperCase();
+  const fallbackBase = sanitizeFilePart(stripExt(originalFileName)) || "FILE";
+  const basePrefix = normalizedPrefix || fallbackBase;
+
+  if (total === 1) {
+    return `${basePrefix} ${dateLabel}`;
+  }
+
+  return `${basePrefix} ${index + 1} ${dateLabel}`;
+}
+
+function renameFile(file, targetName) {
+  return new File([file], targetName, {
+    type: file.type || "application/octet-stream",
+    lastModified: file.lastModified,
+  });
 }
 
 async function notionFetch(env, path, init = {}, isJson = true) {
@@ -142,33 +174,41 @@ export async function onRequestPost(context) {
     }
 
     const allowedMimePrefixes = ["image/"];
-    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const notionDate = now.toISOString().slice(0, 10);
+    const displayDate = formatDisplayDate(now);
     const items = [];
 
     for (let i = 0; i < files.length; i += 1) {
-      const file = files[i];
+      const originalFile = files[i];
 
-      if (!allowedMimePrefixes.some((prefixValue) => file.type.startsWith(prefixValue))) {
-        throw new Error(`Unsupported file type: ${file.name}`);
+      if (!allowedMimePrefixes.some((prefixValue) => originalFile.type.startsWith(prefixValue))) {
+        throw new Error(`Unsupported file type: ${originalFile.name}`);
       }
 
-      if (file.size > MAX_SMALL_FILE_BYTES) {
-        throw new Error(`File ${file.name} is larger than 20 MB`);
+      if (originalFile.size > MAX_SMALL_FILE_BYTES) {
+        throw new Error(`File ${originalFile.name} is larger than 20 MB`);
       }
 
-      const upload = await createFileUpload(env, file);
-      await sendFileUpload(env, upload.id, file);
+      const title = buildBaseName(prefix, originalFile.name, i, files.length, displayDate);
+      const renamedFileName = `${title}${getExt(originalFile.name)}`;
+      const renamedFile = renameFile(originalFile, renamedFileName);
+
+      const upload = await createFileUpload(env, renamedFile);
+      await sendFileUpload(env, upload.id, renamedFile);
 
       const page = await createTicketPage(
         env,
-        buildTitle(prefix, file.name, i, files.length),
+        title,
         upload.id,
-        file.name,
-        today,
+        renamedFile.name,
+        notionDate,
       );
 
       items.push({
-        fileName: file.name,
+        originalFileName: originalFile.name,
+        fileName: renamedFile.name,
+        title,
         pageId: page.id,
         ticketId: extractTicketId(page, env.UNIQUE_ID_PROP),
       });
