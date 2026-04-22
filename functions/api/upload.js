@@ -1,3 +1,5 @@
+const BUILD_VERSION = "v3_nospace_nodots_date";
+
 const NOTION_API_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2026-03-11";
 const MAX_SMALL_FILE_BYTES = 20 * 1024 * 1024;
@@ -5,7 +7,10 @@ const MAX_SMALL_FILE_BYTES = 20 * 1024 * 1024;
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-App-Version": BUILD_VERSION,
+    },
   });
 }
 
@@ -13,7 +18,24 @@ function formatDateForName(date = new Date()) {
   const dd = String(date.getDate()).padStart(2, "0");
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const yyyy = String(date.getFullYear());
-  return `${dd}.${mm}.${yyyy}`;
+  return `${dd}${mm}${yyyy}`;
+}
+
+function formatDateForNotion(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function sanitizePrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .toUpperCase();
+}
+
+function getExtension(fileName) {
+  const match = fileName.match(/(\.[^.]+)$/);
+  return match ? match[1] : "";
 }
 
 function buildBaseName(prefix, index, totalFiles, dateStr) {
@@ -21,14 +43,15 @@ function buildBaseName(prefix, index, totalFiles, dateStr) {
 
   if (safePrefix) {
     if (totalFiles > 1) {
-      return `${safePrefix} ${index} ${dateStr}`;
+      return `${safePrefix}_${index}_${dateStr}`;
     }
-    return `${safePrefix} ${dateStr}`;
+    return `${safePrefix}_${dateStr}`;
   }
 
   if (totalFiles > 1) {
-    return `${index} ${dateStr}`;
+    return `${index}_${dateStr}`;
   }
+
   return dateStr;
 }
 
@@ -143,7 +166,7 @@ export async function onRequestPost({ request, env }) {
     const files = fileEntries.filter((item) => item instanceof File);
 
     if (!files.length) {
-      return json({ error: "No files received" }, 400);
+      return json({ ok: false, build: BUILD_VERSION, error: "No files received" }, 400);
     }
 
     const now = new Date();
@@ -186,6 +209,7 @@ export async function onRequestPost({ request, env }) {
 
     return json({
       ok: true,
+      build: BUILD_VERSION,
       created: items.length,
       items,
     });
@@ -193,6 +217,7 @@ export async function onRequestPost({ request, env }) {
     return json(
       {
         ok: false,
+        build: BUILD_VERSION,
         error: error?.message || "Unknown error",
       },
       500
