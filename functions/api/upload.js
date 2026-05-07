@@ -1,4 +1,4 @@
-const BUILD_VERSION = "v3_nospace_nodots_date";
+const BUILD_VERSION = "v4_image_video_prefix_date_nospaces";
 
 const NOTION_API_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2026-03-11";
@@ -53,6 +53,10 @@ function buildBaseName(prefix, index, totalFiles, dateStr) {
   }
 
   return dateStr;
+}
+
+function isAllowedMediaType(file) {
+  return file.type.startsWith("image/") || file.type.startsWith("video/");
 }
 
 async function notionFetch(env, path, init = {}, isJson = true) {
@@ -166,7 +170,14 @@ export async function onRequestPost({ request, env }) {
     const files = fileEntries.filter((item) => item instanceof File);
 
     if (!files.length) {
-      return json({ ok: false, build: BUILD_VERSION, error: "No files received" }, 400);
+      return json(
+        {
+          ok: false,
+          build: BUILD_VERSION,
+          error: "No files received",
+        },
+        400
+      );
     }
 
     const now = new Date();
@@ -177,6 +188,10 @@ export async function onRequestPost({ request, env }) {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+
+      if (!isAllowedMediaType(file)) {
+        throw new Error(`Unsupported file type: ${file.name}`);
+      }
 
       if (file.size > MAX_SMALL_FILE_BYTES) {
         throw new Error(`File ${file.name} is larger than 20 MB`);
