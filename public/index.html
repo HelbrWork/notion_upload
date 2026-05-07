@@ -83,6 +83,11 @@
       cursor: not-allowed;
     }
 
+    .link-btn {
+      background: #eceff5;
+      color: #111;
+    }
+
     .file-list {
       margin-top: 18px;
       padding: 0;
@@ -115,11 +120,6 @@
       margin-top: 10px;
       font-size: 13px;
       color: #777;
-    }
-
-    .link-btn {
-      background: #eceff5;
-      color: #111;
     }
   </style>
 </head>
@@ -170,8 +170,24 @@
       return (bytes / (1024 * 1024)).toFixed(2) + " MB";
     }
 
+    function getExtension(name) {
+      const match = String(name || "").match(/(\.[^.]+)$/);
+      return match ? match[1].toLowerCase() : "";
+    }
+
     function isAllowedMedia(file) {
-      return file.type.startsWith("image/") || file.type.startsWith("video/");
+      const type = String(file.type || "").toLowerCase();
+      const ext = getExtension(file.name);
+      const allowedExt = [
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg",
+        ".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv"
+      ];
+
+      if (type.startsWith("image/") || type.startsWith("video/")) {
+        return true;
+      }
+
+      return allowedExt.includes(ext);
     }
 
     function renderFiles() {
@@ -224,7 +240,8 @@
 
     clearBtn.addEventListener("click", () => {
       selectedFiles = [];
-      renderFiles();
+      fileList.innerHTML = "";
+      statusBox.textContent = "Пока ничего не выбрано.";
     });
 
     uploadBtn.addEventListener("click", async () => {
@@ -250,21 +267,31 @@
           body: formData
         });
 
-        const data = await res.json();
+        const raw = await res.text();
+
+        let data = {};
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          throw new Error(`Сервер вернул не JSON. HTTP ${res.status}. Ответ: ${raw || "пусто"}`);
+        }
 
         if (!res.ok || !data.ok) {
-          throw new Error(data.error || "Upload failed");
+          throw new Error(
+            data.error ||
+            `Upload failed. HTTP ${res.status}. Stage: ${data.stage || "unknown"}`
+          );
         }
 
         const lines = data.items.map((item, i) => {
           return `${i + 1}. ${item.originalFileName} -> ${item.title} -> ${item.ticketId ?? "created"}`;
         });
 
-        statusBox.textContent =
-          `Готово. Создано: ${data.created}\nBuild: ${data.build}\n\n${lines.join("\n")}`;
-
         selectedFiles = [];
-        renderFiles();
+        fileList.innerHTML = "";
+
+        statusBox.textContent =
+          `Готово. Создано: ${data.created}\nBuild: ${data.build}\nStage: ${data.stage}\n\n${lines.join("\n")}`;
       } catch (err) {
         statusBox.textContent = `Ошибка: ${err.message}`;
       } finally {
