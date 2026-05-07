@@ -2,7 +2,7 @@ const BUILD_VERSION = "v4_image_video_prefix_date_nospaces";
 
 const NOTION_API_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2026-03-11";
-const MAX_SMALL_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_SMALL_FILE_BYTES = 60 * 1024 * 1024;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
