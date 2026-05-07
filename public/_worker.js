@@ -1,8 +1,8 @@
-const BUILD_VERSION = "worker-upload-v1";
+const BUILD_VERSION = "worker-upload-v2";
 
 const NOTION_API_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2026-03-11";
-const MAX_SMALL_FILE_BYTES = 60 * 1024 * 1024;
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 
 const ALLOWED_EXTENSIONS = new Set([
   ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg",
@@ -12,9 +12,7 @@ const ALLOWED_EXTENSIONS = new Set([
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8"
-    }
+    headers: { "Content-Type": "application/json; charset=utf-8" }
   });
 }
 
@@ -212,8 +210,8 @@ async function handleUpload(request, env) {
         throw new Error(`Unsupported file type: ${file.name}`);
       }
 
-      if (file.size > MAX_SMALL_FILE_BYTES) {
-        throw new Error(`File ${file.name} is larger than 20 MB`);
+      if (file.size > MAX_FILE_BYTES) {
+        throw new Error(`File ${file.name} is larger than 100 MB`);
       }
 
       const ext = getExtension(file.name);
