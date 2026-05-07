@@ -1,8 +1,24 @@
-const BUILD_VERSION = "v4_image_video_prefix_date_nospaces";
+const BUILD_VERSION = "v5_image_video_debug_nospaces_date";
 
 const NOTION_API_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2026-03-11";
 const MAX_SMALL_FILE_BYTES = 60 * 1024 * 1024;
+
+const ALLOWED_EXTENSIONS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".svg",
+  ".mp4",
+  ".mov",
+  ".webm",
+  ".m4v",
+  ".avi",
+  ".mkv",
+]);
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -34,8 +50,19 @@ function sanitizePrefix(value) {
 }
 
 function getExtension(fileName) {
-  const match = fileName.match(/(\.[^.]+)$/);
-  return match ? match[1] : "";
+  const match = String(fileName || "").match(/(\.[^.]+)$/);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function isAllowedMediaType(file) {
+  const type = String(file?.type || "").toLowerCase();
+  const ext = getExtension(file?.name || "");
+
+  if (type.startsWith("image/") || type.startsWith("video/")) {
+    return true;
+  }
+
+  return ALLOWED_EXTENSIONS.has(ext);
 }
 
 function buildBaseName(prefix, index, totalFiles, dateStr) {
@@ -55,37 +82,36 @@ function buildBaseName(prefix, index, totalFiles, dateStr) {
   return dateStr;
 }
 
-function isAllowedMediaType(file) {
-  return file.type.startsWith("image/") || file.type.startsWith("video/");
-}
-
-async function notionFetch(env, path, init = {}, isJson = true) {
+async function notionFetch(env, path, init = {}, expectJson = true) {
   const headers = new Headers(init.headers || {});
   headers.set("Authorization", `Bearer ${env.NOTION_TOKEN}`);
   headers.set("Notion-Version", NOTION_VERSION);
 
-  if (isJson && !headers.has("Content-Type")) {
+  if (expectJson && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${NOTION_API_BASE}${path}`, {
+  const response = await fetch(`${NOTION_API_BASE}${path}`, {
     ...init,
     headers,
   });
 
-  const text = await res.text();
+  const raw = await response.text();
   let data = {};
 
-  if (text) {
+  if (raw) {
     try {
-      data = JSON.parse(text);
+      data = JSON.parse(raw);
     } catch {
-      throw new Error(`${path} -> ${res.status} returned non-JSON: ${text}`);
+      if (!response.ok) {
+        throw new Error(`${path} -> ${response.status} non-JSON response: ${raw}`);
+      }
+      data = { raw };
     }
   }
 
-  if (!res.ok) {
-    throw new Error(`${path} -> ${res.status} ${JSON.stringify(data)}`);
+  if (!response.ok) {
+    throw new Error(`${path} -> ${response.status} ${JSON.stringify(data)}`);
   }
 
   return data;
@@ -163,8 +189,12 @@ function extractTicketId(page, uniqueIdPropName) {
 }
 
 export async function onRequestPost({ request, env }) {
+  let stage = "start";
+
   try {
+    stage = "read_form";
     const form = await request.formData();
+
     const prefixRaw = String(form.get("titlePrefix") || "");
     const fileEntries = form.getAll("files");
     const files = fileEntries.filter((item) => item instanceof File);
@@ -174,6 +204,7 @@ export async function onRequestPost({ request, env }) {
         {
           ok: false,
           build: BUILD_VERSION,
+          stage: "validate",
           error: "No files received",
         },
         400
@@ -188,23 +219,37 @@ export async function onRequestPost({ request, env }) {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+      const index = i + 1;
+
+      console.log("UPLOAD_FILE", {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+      });
+
+      stage = "validate";
 
       if (!isAllowedMediaType(file)) {
-        throw new Error(`Unsupported file type: ${file.name}`);
+        throw new Error(`Unsupported file type: ${file.name} (${file.type || "unknown"})`);
       }
 
       if (file.size > MAX_SMALL_FILE_BYTES) {
-        throw new Error(`File ${file.name} is larger than 20 MB`);
+        throw new Error(
+          `File ${file.name} is larger than 20 MB. Current version supports files up to 20 MB.`
+        );
       }
 
-      const index = i + 1;
       const ext = getExtension(file.name);
       const title = buildBaseName(prefixRaw, index, files.length, humanDate);
       const uploadFileName = `${title}${ext}`;
 
+      stage = "create_upload";
       const upload = await createFileUpload(env, uploadFileName, file.type);
+
+      stage = "send_upload";
       await sendFileUpload(env, upload.id, file, uploadFileName);
 
+      stage = "create_page";
       const page = await createTicketPage(
         env,
         title,
@@ -225,14 +270,23 @@ export async function onRequestPost({ request, env }) {
     return json({
       ok: true,
       build: BUILD_VERSION,
+      stage: "done",
       created: items.length,
       items,
     });
   } catch (error) {
+    console.error("UPLOAD_ERROR", {
+      build: BUILD_VERSION,
+      stage,
+      message: error?.message,
+      stack: error?.stack,
+    });
+
     return json(
       {
         ok: false,
         build: BUILD_VERSION,
+        stage,
         error: error?.message || "Unknown error",
       },
       500
