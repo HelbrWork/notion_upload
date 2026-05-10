@@ -1,11 +1,8 @@
-const BUILD_VERSION = "worker-upload-v3-multipart-100mb";
+const BUILD_VERSION = "worker-upload-v2";
 
 const NOTION_API_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2026-03-11";
-
-const SINGLE_PART_LIMIT_BYTES = 20 * 1024 * 1024; // 20 MiB
-const MAX_FILE_BYTES = 100 * 1024 * 1024;          // 100 MiB
-const MULTIPART_CHUNK_BYTES = 10 * 1024 * 1024;    // 10 MiB
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 
 const ALLOWED_EXTENSIONS = new Set([
   ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg",
@@ -71,10 +68,6 @@ function buildBaseName(prefix, index, totalFiles, dateStr) {
   return dateStr;
 }
 
-function getPartCount(fileSize, chunkSize) {
-  return Math.ceil(fileSize / chunkSize);
-}
-
 async function notionFetch(env, path, init = {}, expectJson = true) {
   const headers = new Headers(init.headers || {});
   headers.set("Authorization", `Bearer ${env.NOTION_TOKEN}`);
@@ -110,7 +103,7 @@ async function notionFetch(env, path, init = {}, expectJson = true) {
   return data;
 }
 
-async function createSinglePartUpload(env, uploadFileName, contentType) {
+async function createFileUpload(env, uploadFileName, contentType) {
   return notionFetch(env, "/file_uploads", {
     method: "POST",
     body: JSON.stringify({
@@ -121,19 +114,7 @@ async function createSinglePartUpload(env, uploadFileName, contentType) {
   });
 }
 
-async function createMultiPartUpload(env, uploadFileName, contentType, numberOfParts) {
-  return notionFetch(env, "/file_uploads", {
-    method: "POST",
-    body: JSON.stringify({
-      mode: "multi_part",
-      number_of_parts: numberOfParts,
-      filename: uploadFileName,
-      content_type: contentType || "application/octet-stream",
-    }),
-  });
-}
-
-async function sendSinglePart(env, fileUploadId, file, uploadFileName) {
+async function sendFileUpload(env, fileUploadId, file, uploadFileName) {
   const form = new FormData();
   form.append("file", file, uploadFileName);
 
@@ -146,64 +127,6 @@ async function sendSinglePart(env, fileUploadId, file, uploadFileName) {
     },
     false
   );
-}
-
-async function sendMultiPart(env, fileUploadId, blobPart, uploadFileName, partNumber) {
-  const form = new FormData();
-  form.append("file", blobPart, uploadFileName);
-  form.append("part_number", String(partNumber));
-
-  return notionFetch(
-    env,
-    `/file_uploads/${fileUploadId}/send`,
-    {
-      method: "POST",
-      body: form,
-    },
-    false
-  );
-}
-
-async function completeMultiPartUpload(env, fileUploadId) {
-  return notionFetch(env, `/file_uploads/${fileUploadId}/complete`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
-}
-
-async function uploadFileToNotion(env, file, uploadFileName) {
-  const contentType = file.type || "application/octet-stream";
-
-  if (file.size <= SINGLE_PART_LIMIT_BYTES) {
-    const upload = await createSinglePartUpload(env, uploadFileName, contentType);
-    await sendSinglePart(env, upload.id, file, uploadFileName);
-    return upload.id;
-  }
-
-  const numberOfParts = getPartCount(file.size, MULTIPART_CHUNK_BYTES);
-  const upload = await createMultiPartUpload(
-    env,
-    uploadFileName,
-    contentType,
-    numberOfParts
-  );
-
-  for (let partIndex = 0; partIndex < numberOfParts; partIndex++) {
-    const start = partIndex * MULTIPART_CHUNK_BYTES;
-    const end = Math.min(start + MULTIPART_CHUNK_BYTES, file.size);
-    const blobPart = file.slice(start, end, contentType);
-
-    await sendMultiPart(
-      env,
-      upload.id,
-      blobPart,
-      uploadFileName,
-      partIndex + 1
-    );
-  }
-
-  await completeMultiPartUpload(env, upload.id);
-  return upload.id;
 }
 
 async function createTicketPage(env, title, uploadFileName, fileUploadId, notionDate) {
@@ -295,15 +218,18 @@ async function handleUpload(request, env) {
       const title = buildBaseName(prefixRaw, index, files.length, humanDate);
       const uploadFileName = `${title}${ext}`;
 
-      stage = "upload_file";
-      const fileUploadId = await uploadFileToNotion(env, file, uploadFileName);
+      stage = "create_upload";
+      const upload = await createFileUpload(env, uploadFileName, file.type);
+
+      stage = "send_upload";
+      await sendFileUpload(env, upload.id, file, uploadFileName);
 
       stage = "create_page";
       const page = await createTicketPage(
         env,
         title,
         uploadFileName,
-        fileUploadId,
+        upload.id,
         notionDate
       );
 
